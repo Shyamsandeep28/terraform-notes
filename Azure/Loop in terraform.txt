@@ -1,0 +1,134 @@
+
+Okay team, now that we’ve created one VM using Terraform, let’s say we want to create multiple VMs with the same configuration — but maybe different names. Do we copy-paste the same code 10 times? No way! That’s where Terraform loops come in.
+
+One of the most powerful and clean ways to handle repetition in Terraform is with the for_each loop. This lets us take a list or a map, and create a resource for each item in it.
+
+It’s like saying:
+
+Hey Terraform, for each name in this list, go create a VM.
+
+Let me walk you through this with an example.
+
+Let’s say we want to create 3 VMs: vm1, vm2, and vm3. We’ll start by defining a local variable to store those names, and then use for_each to loop over them.
+
+Let’s build this step-by-step."*
+
+
+### FILE: variables.tf
+
+variable "vm_names" {
+  type    = list(string)
+  default = ["vm1", "vm2", "vm3"]
+}
+
+### FILE: provider.tf
+
+provider "azurerm" {
+  features {}
+}
+
+### FILE: resource_group.tf
+
+resource "azurerm_resource_group" "sandeep" {
+  name     = "sandeep-rg"
+  location = "Central India"
+}
+
+### FILE: virtual_network.tf
+
+resource "azurerm_virtual_network" "default" {
+  name                = "sandeep-vnet"
+  address_space       = ["10.0.0.0/16"]
+  location            = azurerm_resource_group.sandeep.location
+  resource_group_name = azurerm_resource_group.sandeep.name
+}
+
+resource "azurerm_subnet" "default" {
+  name                 = "sandeep-subnet"
+  resource_group_name  = azurerm_resource_group.sandeep.name
+  virtual_network_name = azurerm_virtual_network.default.name
+  address_prefixes     = ["10.0.1.0/24"]
+}
+
+### FILE: public_ip.tf
+
+resource "azurerm_public_ip" "multi_ip" {
+  for_each            = toset(var.vm_names)
+
+  name                = "${each.value}-pip"
+  location            = azurerm_resource_group.sandeep.location
+  resource_group_name = azurerm_resource_group.sandeep.name
+  allocation_method   = "Dynamic"
+}
+
+### FILE: network_interface.tf
+
+resource "azurerm_network_interface" "multi_nic" {
+  for_each            = toset(var.vm_names)
+
+  name                = "${each.value}-nic"
+  location            = azurerm_resource_group.sandeep.location
+  resource_group_name = azurerm_resource_group.sandeep.name
+
+  ip_configuration {
+    name                          = "internal"
+    subnet_id                     = azurerm_subnet.default.id
+    private_ip_address_allocation = "Dynamic"
+    public_ip_address_id          = azurerm_public_ip.multi_ip[each.value].id
+  }
+}
+
+### FILE: virtual_machine.tf
+
+resource "azurerm_linux_virtual_machine" "multi_vm" {
+  for_each            = toset(var.vm_names)
+
+  name                = each.value
+  resource_group_name = azurerm_resource_group.sandeep.name
+  location            = azurerm_resource_group.sandeep.location
+  size                = "Standard_B1s"
+  admin_username      = "sandeep"
+  admin_password      = "Password@123"
+  disable_password_authentication = false
+
+  network_interface_ids = [
+    azurerm_network_interface.multi_nic[each.value].id
+  ]
+
+  image_reference {
+    publisher = "Canonical"
+    offer     = "UbuntuServer"
+    sku       = "22.04-LTS"
+    version   = "latest"
+  }
+
+  os_disk {
+    name                 = "${each.value}-osdisk"
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
+
+  provisioner "remote-exec" {
+    inline = [
+      "sudo apt update -y",
+      "sudo apt install -y nginx"
+    ]
+
+    connection {
+      type     = "ssh"
+      host     = azurerm_public_ip.multi_ip[each.value].ip_address
+      user     = "sandeep"
+      password = "Password@123"
+      timeout  = "2m"
+    }
+  }
+}
+
+### FILE: outputs.tf
+
+output "vm_public_ips" {
+  value = {
+    for name, pip in azurerm_public_ip.multi_ip :
+    name => pip.ip_address
+  }
+}
